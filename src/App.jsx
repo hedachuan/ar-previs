@@ -134,11 +134,13 @@ export default function App() {
   // 安全加载沙盘图片资源
   useEffect(() => {
     const loader = new THREE.TextureLoader();
-    loader.load('/sandtable.jpg', (tex) => {
+    const imgPath = import.meta.env.BASE_URL + 'sandtable.jpg';
+
+    loader.load(imgPath, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
       setSandTexture(tex);
     }, undefined, (err) => {
-      console.warn("未找到 /sandtable.jpg，已自动降级为纯白材质。");
+      console.warn("未找到图片，尝试加载路径:", imgPath);
     });
   }, []);
 
