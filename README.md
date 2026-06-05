@@ -1,16 +1,47 @@
-# React + Vite
+AR 视场仿真系统 (AR FOV Pre-vis Simulator)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+[👉 点击这里直接体验在线预览版](https://hedachuan.github.io/ar-previs/)
 
-Currently, two official plugins are available:
+📝 项目简介
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+这是一个基于 Web3D 技术的 AR 预视觉化（Pre-vis）仿真工具，专为大型实体展示项目（如沙盘、展厅互动装置）设计。
 
-## React Compiler
+在开发实体设备的 AR 扫描功能时，能够在开发前期精确评估摄像头的物理视场（FOV）覆盖率、盲区以及拍摄距离，对于指导客户购买何种硬件、如何摆放设备，非常重要。
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+本工具通过严谨的三维空间数学矩阵解算，将 iPad 等移动设备的镜头参数可视化，帮助开发者与客户直观地预览“站在特定位置，屏幕里究竟能看到多大面积的沙盘”。
 
-## Expanding the ESLint configuration
+✨ 核心特性
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- **精准数学解算**：告别模糊的高亮光圈，利用三维射线检测（Raycast）与地面平面相交，实时绘制 100% 物理精准的视网锥体边界。
+- **画中画（PIP）实时监控**：双画布同步渲染，右上角 4:3 窗口强制接管相机矩阵，1:1 还原 iPad 真实屏幕取景画面。
+- **多轴姿态模拟**：支持 XYZ 三轴空间位移，以及 X轴（俯仰 Pitch）、Y轴（偏航 Yaw）的自由视角旋转。
+- **动态覆盖率统计**：实时解算当前视口内的投影面积，并计算占实体沙盘总面积的百分比。
+- **越界保护**：自带输入框硬件参数越界检查，避免非法数值导致模型崩坏。
+
+🛠️ 技术栈
+
+- **框架**: React 18 + Vite
+- **3D 引擎**: Three.js
+- **React 桥接**: @react-three/fiber + @react-three/drei
+
+🚀 本地开发与运行
+
+如果你想在本地修改这个项目，请按照以下步骤操作：
+
+1. 克隆本项目到本地：
+   ```bash
+   git clone https://github.com/hedachuan/ar-previs.git
+   ```
+2. 进入项目目录并安装依赖：
+   ```bash
+   cd ar-previs
+   npm install
+   ```
+3. 运行开发服务器：
+   ```bash
+   npm run dev
+   ```
+   访问 `http://localhost:5173/ar-previs/` 即可查看效果。
+
+🤝 贡献与修改
+如果你有自己的沙盘设计图，只需将 public/sandtable.jpg 替换为你自己的设计图稿即可，程序会自动拉伸贴合物理坐标。
