@@ -10,6 +10,12 @@ const getUrlParam = (key, defaultVal) => {
   return val !== null && !isNaN(parseFloat(val)) ? parseFloat(val) : defaultVal;
 };
 
+const getUrlParamString = (key, defaultVal) => {
+  const params = new URLSearchParams(window.location.search);
+  const val = params.get(key);
+  return val !== null ? val : defaultVal;
+};
+
 // --- 核心：视锥与地面相交数学解算组件 ---
 const FOVProjector = ({ position, pitch, yaw, fov, aspectRatio, tableWidth, tableLength, onUpdate }) => {
   const { groundGeo, rayGeo, area, coverage, centerDistance } = useMemo(() => {
@@ -91,7 +97,6 @@ const FOVProjector = ({ position, pitch, yaw, fov, aspectRatio, tableWidth, tabl
   );
 };
 
-// --- 沙盘环境组件 ---
 const SandTableEnvironment = ({ texture, width, length, showGrid }) => (
   <group>
     <mesh position={[width/2, -0.01, length/2]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -127,7 +132,6 @@ const PIPCameraController = ({ position, pitch, yaw, fov, aspectRatio }) => {
 };
 
 export default function App() {
-  // 1. 初始化时优先读取 URL 参数，如果没有则使用默认值
   const [tableWidth, setTableWidth] = useState(() => getUrlParam('tw', 8.1));
   const [tableLength, setTableLength] = useState(() => getUrlParam('tl', 4.96));
   const [posX, setPosX] = useState(() => getUrlParam('x', 4.05)); 
@@ -136,18 +140,27 @@ export default function App() {
   const [pitch, setPitch] = useState(() => getUrlParam('p', 60)); 
   const [yaw, setYaw] = useState(() => getUrlParam('yw', 0));      
   const [fov, setFov] = useState(() => getUrlParam('f', 65)); 
-  const [aspectRatio, setAspectRatio] = useState(() => getUrlParam('ar', 4/3));
+  
+  // --- 新增：画幅模式与自定义宽高 ---
+  const [aspectMode, setAspectMode] = useState(() => getUrlParamString('am', '4/3'));
+  const [customW, setCustomW] = useState(() => getUrlParam('cw', 1920));
+  const [customH, setCustomH] = useState(() => getUrlParam('ch', 1080));
   
   const [showGrid, setShowGrid] = useState(true);
   const [showPIP, setShowPIP] = useState(true);
-
   const [telemetry, setTelemetry] = useState({ area: 0, coverage: 0, centerDistance: 0 });
   const [sandTexture, setSandTexture] = useState(null);
-  
-  // 图片加载状态 UI
   const [imgStatus, setImgStatus] = useState('初始化...');
+  
+  const fileInputRef = useRef(null); // 用于触发本地文件选择
 
-  // 2. 监听参数变化，实时写入 URL（用于一键分享和防止刷新丢失）
+  // 动态解算最终生效的宽高比
+  const actualAspect = useMemo(() => {
+    if (aspectMode === 'custom') return customW / customH;
+    if (aspectMode === '16/9') return 16 / 9;
+    return 4 / 3;
+  }, [aspectMode, customW, customH]);
+
   useEffect(() => {
     const params = new URLSearchParams();
     params.set('tw', tableWidth.toFixed(2));
@@ -158,28 +171,43 @@ export default function App() {
     params.set('p', pitch.toFixed(0));
     params.set('yw', yaw.toFixed(0));
     params.set('f', fov.toFixed(0));
-    params.set('ar', aspectRatio.toFixed(3));
-    
-    // 替换当前网址，不会引起页面重载
+    params.set('am', aspectMode);
+    if (aspectMode === 'custom') {
+      params.set('cw', customW);
+      params.set('ch', customH);
+    }
     window.history.replaceState(null, '', '?' + params.toString());
-  }, [tableWidth, tableLength, posX, posY, posZ, pitch, yaw, fov, aspectRatio]);
+  }, [tableWidth, tableLength, posX, posY, posZ, pitch, yaw, fov, aspectMode, customW, customH]);
 
-  // 加载图片并更新状态
+  // 初始化加载默认服务器图片
   useEffect(() => {
     setImgStatus('正在下载贴图...');
     const loader = new THREE.TextureLoader();
     const imgPath = import.meta.env.BASE_URL + 'sandtable.jpg';
     loader.load(
       imgPath, 
-      (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        setSandTexture(tex);
-        setImgStatus('已加载完成');
-      }, 
+      (tex) => { tex.colorSpace = THREE.SRGBColorSpace; setSandTexture(tex); setImgStatus('已加载完成'); }, 
       undefined, 
       () => setImgStatus('未找到图片(使用纯白底)')
     );
   }, []);
+
+  // --- 新增：纯前端本地图片上传解析 ---
+  const handleLocalImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    setImgStatus('正在处理本地图片...');
+    // 创建一个存在于浏览器内存中的临时 URL
+    const blobUrl = URL.createObjectURL(file);
+    
+    const loader = new THREE.TextureLoader();
+    loader.load(blobUrl, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      setSandTexture(tex);
+      setImgStatus('已应用本地图片');
+    });
+  };
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
@@ -190,19 +218,28 @@ export default function App() {
           <h2 style={{ margin: '0 0 4px 0', fontSize: '20px', fontWeight: '600', color: '#1d1d1f' }}>AR 视场仿真引擎</h2>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#86868b' }}>
             <span>原点 (0,0) 绑定左下角</span>
-            {/* 贴图加载状态指示 */}
-            <span style={{ color: imgStatus === '已加载完成' ? '#34c759' : '#ff9500' }}>{imgStatus}</span>
+            <span style={{ color: imgStatus.includes('已') ? '#34c759' : '#ff9500' }}>{imgStatus}</span>
           </div>
         </div>
 
         <div style={{ backgroundColor: '#fff', padding: '16px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-          <h3 style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#1d1d1f' }}>沙盘物理尺寸 (米)</h3>
-          <ControlSlider label="宽度 Width (X轴)" min={1.0} max={20.0} step={0.1} value={tableWidth} onChange={setTableWidth} />
-          <ControlSlider label="长度 Length (Z轴)" min={1.0} max={20.0} step={0.1} value={tableLength} onChange={setTableLength} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+             <h3 style={{ margin: 0, fontSize: '14px', color: '#1d1d1f' }}>沙盘物理参数</h3>
+             {/* 隐藏的 file input，通过 button 触发 */}
+             <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleLocalImageUpload} />
+             <button 
+               onClick={() => fileInputRef.current.click()} 
+               style={{ padding: '4px 8px', fontSize: '12px', backgroundColor: '#007AFF', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+             >
+               + 上传图纸
+             </button>
+          </div>
+          <ControlSlider label="宽度 Width (X轴/米)" min={1.0} max={20.0} step={0.1} value={tableWidth} onChange={setTableWidth} />
+          <ControlSlider label="长度 Length (Z轴/米)" min={1.0} max={20.0} step={0.1} value={tableLength} onChange={setTableLength} />
         </div>
 
         <div style={{ backgroundColor: '#fff', padding: '16px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-          <h3 style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#1d1d1f' }}>设备空间坐标</h3>
+          <h3 style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#1d1d1f' }}>摄像头空间位置</h3>
           <ControlSlider label="X轴位置" min={-2.0} max={tableWidth + 2.0} step={0.01} value={posX} onChange={setPosX} />
           <ControlSlider label="Y轴高度" min={0.1} max={6.0} step={0.01} value={posY} onChange={setPosY} />
           <ControlSlider label="Z轴位置" min={-2.0} max={tableLength + 2.0} step={0.01} value={posZ} onChange={setPosZ} />
@@ -210,18 +247,34 @@ export default function App() {
 
         <div style={{ backgroundColor: '#fff', padding: '16px', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ margin: 0, fontSize: '14px', color: '#1d1d1f' }}>摄像机参数</h3>
+            <h3 style={{ margin: 0, fontSize: '14px', color: '#1d1d1f' }}>摄像头参数</h3>
             <select 
-              value={aspectRatio} onChange={(e) => setAspectRatio(parseFloat(e.target.value))}
+              value={aspectMode} onChange={(e) => setAspectMode(e.target.value)}
               style={{ fontSize: '12px', padding: '4px', borderRadius: '6px', border: '1px solid #d2d2d7' }}
             >
-              <option value={4/3}>iPad Pro (4:3)</option>
-              <option value={16/9}>iPhone / 手机 (16:9)</option>
+              <option value="4/3">4:3 (iPad / 平板)</option>
+              <option value="16/9">16:9 (手机 / 宽屏监控)</option>
+              <option value="custom">⚙️ 自定义分辨率...</option>
             </select>
           </div>
+          
+          {/* 当选择自定义模式时，展开自定义宽高输入框 */}
+          {aspectMode === 'custom' && (
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', padding: '8px', backgroundColor: '#f5f5f7', borderRadius: '8px' }}>
+              <div style={{ flex: 1 }}>
+                 <div style={{ fontSize: '11px', color: '#86868b', marginBottom: '4px' }}>画面宽度 (px)</div>
+                 <input type="number" value={customW} onChange={(e) => setCustomW(parseFloat(e.target.value)||1920)} style={{ width: '100%', padding: '4px', border: '1px solid #d2d2d7', borderRadius: '4px' }} />
+              </div>
+              <div style={{ flex: 1 }}>
+                 <div style={{ fontSize: '11px', color: '#86868b', marginBottom: '4px' }}>画面高度 (px)</div>
+                 <input type="number" value={customH} onChange={(e) => setCustomH(parseFloat(e.target.value)||1080)} style={{ width: '100%', padding: '4px', border: '1px solid #d2d2d7', borderRadius: '4px' }} />
+              </div>
+            </div>
+          )}
+
           <ControlSlider label="俯仰角 (Pitch)" min={0} max={90} step={1} value={pitch} onChange={setPitch} />
           <ControlSlider label="偏航角 (Yaw)" min={-180} max={180} step={1} value={yaw} onChange={setYaw} />
-          <ControlSlider label="有效垂直 FOV" min={45} max={90} step={1} value={fov} onChange={setFov} />
+          <ControlSlider label="有效垂直 FOV" min={45} max={120} step={1} value={fov} onChange={setFov} />
         </div>
 
         <div style={{ backgroundColor: '#1d1d1f', padding: '16px', borderRadius: '12px', color: '#fff' }}>
@@ -234,9 +287,9 @@ export default function App() {
             <span style={{ fontWeight: '500', color: telemetry.coverage > 80 ? '#34c759' : '#fff' }}>{telemetry.coverage.toFixed(1)} %</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', borderTop: '1px solid #333', paddingTop: '8px', marginTop: '8px' }}>
-            <span>LiDAR 视距预估:</span>
+            <span>传感器中心距离:</span>
             <span style={{ fontWeight: '500', color: telemetry.centerDistance > 5 ? '#ff3b30' : '#34c759' }}>
-              {telemetry.centerDistance.toFixed(2)} m {telemetry.centerDistance > 5 && '(过远)'}
+              {telemetry.centerDistance.toFixed(2)} m {telemetry.centerDistance > 5 && '(信号衰减)'}
             </span>
           </div>
         </div>
@@ -265,7 +318,7 @@ export default function App() {
 
             <FOVProjector 
               position={[posX, posY, posZ]} pitch={pitch} yaw={yaw} fov={fov} 
-              aspectRatio={aspectRatio} tableWidth={tableWidth} tableLength={tableLength} onUpdate={setTelemetry} 
+              aspectRatio={actualAspect} tableWidth={tableWidth} tableLength={tableLength} onUpdate={setTelemetry} 
             />
           </group>
         </Canvas>
@@ -273,8 +326,10 @@ export default function App() {
         {/* 右上角 PIP 动态画中画 */}
         {showPIP && (
           <div style={{ 
-            position: 'absolute', top: '24px', right: '24px', width: '320px', height: `${320 / aspectRatio}px`,
-            backgroundColor: '#000', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)', border: '2px solid rgba(255,255,255,0.2)', pointerEvents: 'none', transition: 'height 0.3s'
+            position: 'absolute', top: '24px', right: '24px', 
+            width: '320px', 
+            height: `${320 / actualAspect}px`, // 高度根据动态解算的画幅比例实时计算
+            backgroundColor: '#000', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)', border: '2px solid rgba(255,255,255,0.2)', pointerEvents: 'none', transition: 'height 0.3s ease-out'
           }}>
             <div style={{ position: 'absolute', top: 8, left: 12, zIndex: 10, color: '#fff', fontSize: '12px', fontWeight: 'bold', background: 'rgba(0,0,0,0.5)', padding: '2px 8px', borderRadius: '4px' }}>
               ● 实时取景器
@@ -282,7 +337,7 @@ export default function App() {
             <Canvas>
               <ambientLight intensity={0.5} />
               <directionalLight position={[10, 10, 5]} intensity={1} />
-              <PIPCameraController position={[posX, posY, posZ]} pitch={pitch} yaw={yaw} fov={fov} aspectRatio={aspectRatio} />
+              <PIPCameraController position={[posX, posY, posZ]} pitch={pitch} yaw={yaw} fov={fov} aspectRatio={actualAspect} />
               <SandTableEnvironment texture={sandTexture} width={tableWidth} length={tableLength} showGrid={false} />
             </Canvas>
           </div>
