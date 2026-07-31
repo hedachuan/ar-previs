@@ -1,25 +1,29 @@
-﻿import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
-import { Grid, OrbitControls } from '@react-three/drei';
+﻿import { useState, useMemo, useEffect, useRef } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { Grid, OrbitControls, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
+import './App.css';
 
 // --- 工具函数：从网址读取参数 ---
-const getUrlParam = (key, defaultVal) => {
+const getUrlParam = (key, defaultVal, min = -Infinity, max = Infinity) => {
   const params = new URLSearchParams(window.location.search);
-  const val = params.get(key);
-  return val !== null && !isNaN(parseFloat(val)) ? parseFloat(val) : defaultVal;
+  const rawValue = params.get(key);
+  if (rawValue === null || rawValue.trim() === '') return defaultVal;
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) ? THREE.MathUtils.clamp(parsed, min, max) : defaultVal;
 };
 
 const getUrlParamString = (key, defaultVal) => {
   const params = new URLSearchParams(window.location.search);
   const val = params.get(key);
-  return val !== null ? val : defaultVal;
+  return ['4/3', '16/9', 'custom'].includes(val) ? val : defaultVal;
 };
 
 // --- 核心：视锥与地面相交数学解算组件 ---
 const FOVProjector = ({ position, pitch, yaw, fov, aspectRatio, tableWidth, tableLength, onUpdate }) => {
-  const { groundGeo, rayGeo, area, coverage, centerDistance } = useMemo(() => {
-    const virtualCamera = new THREE.PerspectiveCamera(fov, aspectRatio, 0.1, 100);
+  const { groundGeo, outlineGeo, rayGeo, area, coverage, centerDistance, hasFootprint } = useMemo(() => {
+    const maxProjectionDistance = Math.max(tableWidth, tableLength, position[1]) * 20;
+    const virtualCamera = new THREE.PerspectiveCamera(fov, aspectRatio, 0.1, maxProjectionDistance);
     virtualCamera.position.set(position[0], position[1], position[2]);
     virtualCamera.rotation.order = 'YXZ';
     virtualCamera.rotation.set(-pitch * (Math.PI / 180), -yaw * (Math.PI / 180), 0);
@@ -29,8 +33,10 @@ const FOVProjector = ({ position, pitch, yaw, fov, aspectRatio, tableWidth, tabl
       const vec = new THREE.Vector3(ndcX, ndcY, 0.5);
       vec.unproject(virtualCamera);
       vec.sub(virtualCamera.position).normalize();
-      if (vec.y >= 0) return null; 
+      // 地平线附近除数趋近 0，会产生极大坐标并破坏 WebGL 深度精度。
+      if (vec.y >= -1e-4) return null;
       const t = -virtualCamera.position.y / vec.y;
+      if (!Number.isFinite(t) || t <= 0 || t > maxProjectionDistance) return null;
       return new THREE.Vector3().copy(virtualCamera.position).add(vec.multiplyScalar(t));
     };
 
@@ -40,24 +46,24 @@ const FOVProjector = ({ position, pitch, yaw, fov, aspectRatio, tableWidth, tabl
     const pBottomLeft = getGroundIntersection(-1, -1);
 
     const groundGeometry = new THREE.BufferGeometry();
+    const outlineGeometry = new THREE.BufferGeometry();
     const rayGeometry = new THREE.BufferGeometry();
     let currentArea = 0;
     let dist = 0;
+    const intersections = [pTopLeft, pTopRight, pBottomRight, pBottomLeft];
+    const footprintIsValid = intersections.every(Boolean);
 
-    if (pTopLeft && pTopRight && pBottomRight && pBottomLeft) {
+    if (footprintIsValid) {
       const vertices = new Float32Array([
         pTopLeft.x, 0.01, pTopLeft.z,     pBottomLeft.x, 0.01, pBottomLeft.z, pTopRight.x, 0.01, pTopRight.z,
         pTopRight.x, 0.01, pTopRight.z,   pBottomLeft.x, 0.01, pBottomLeft.z, pBottomRight.x, 0.01, pBottomRight.z,
       ]);
       groundGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-      
-      const rayVertices = new Float32Array([
-        position[0], position[1], position[2],  pTopLeft.x, 0.01, pTopLeft.z,
-        position[0], position[1], position[2],  pTopRight.x, 0.01, pTopRight.z,
-        position[0], position[1], position[2],  pBottomRight.x, 0.01, pBottomRight.z,
-        position[0], position[1], position[2],  pBottomLeft.x, 0.01, pBottomLeft.z,
-      ]);
-      rayGeometry.setAttribute('position', new THREE.BufferAttribute(rayVertices, 3));
+
+      outlineGeometry.setFromPoints(
+        [pTopLeft, pTopRight, pBottomRight, pBottomLeft, pTopLeft]
+          .map((point) => new THREE.Vector3(point.x, 0.012, point.z)),
+      );
 
       const v1 = new THREE.Vector3().subVectors(pBottomLeft, pTopLeft);
       const v2 = new THREE.Vector3().subVectors(pTopRight, pTopLeft);
@@ -72,27 +78,50 @@ const FOVProjector = ({ position, pitch, yaw, fov, aspectRatio, tableWidth, tabl
         dist = virtualCamera.position.distanceTo(centerTarget);
       }
     }
-    
+
+    const validRayPoints = intersections.filter(Boolean);
+    if (validRayPoints.length) {
+      const rayVertices = validRayPoints.flatMap((point) => [
+        position[0], position[1], position[2], point.x, 0.01, point.z,
+      ]);
+      rayGeometry.setAttribute('position', new THREE.Float32BufferAttribute(rayVertices, 3));
+    }
+
     const totalTableArea = tableWidth * tableLength;
     const currentCoverage = Math.min((currentArea / totalTableArea) * 100, 100);
 
-    return { groundGeo: groundGeometry, rayGeo: rayGeometry, area: currentArea, coverage: currentCoverage, centerDistance: dist };
+    return {
+      groundGeo: groundGeometry,
+      outlineGeo: outlineGeometry,
+      rayGeo: rayGeometry,
+      area: currentArea,
+      coverage: currentCoverage,
+      centerDistance: dist,
+      hasFootprint: footprintIsValid,
+    };
   }, [position, pitch, yaw, fov, aspectRatio, tableWidth, tableLength]);
 
-  useEffect(() => { if (onUpdate) onUpdate({ area, coverage, centerDistance }); }, [area, coverage, centerDistance, onUpdate]);
+  useEffect(() => {
+    onUpdate?.({ area, coverage, centerDistance, hasFootprint });
+  }, [area, coverage, centerDistance, hasFootprint, onUpdate]);
 
   return (
     <>
-      <mesh geometry={groundGeo}>
-        <meshBasicMaterial color="#007AFF" transparent opacity={0.3} side={THREE.DoubleSide} />
-      </mesh>
-      <lineSegments>
-        <edgesGeometry args={[groundGeo]} />
-        <lineBasicMaterial color="#007AFF" linewidth={2} />
-      </lineSegments>
-      <lineSegments geometry={rayGeo}>
-        <lineBasicMaterial color="#007AFF" transparent opacity={0.5} />
-      </lineSegments>
+      {hasFootprint && (
+        <>
+          <mesh geometry={groundGeo}>
+            <meshBasicMaterial color="#007AFF" transparent opacity={0.3} side={THREE.DoubleSide} depthWrite={false} />
+          </mesh>
+          <line geometry={outlineGeo}>
+            <lineBasicMaterial color="#007AFF" />
+          </line>
+        </>
+      )}
+      {rayGeo.getAttribute('position') && (
+        <lineSegments geometry={rayGeo}>
+          <lineBasicMaterial color="#007AFF" transparent opacity={0.5} />
+        </lineSegments>
+      )}
     </>
   );
 };
@@ -118,45 +147,32 @@ const SandTableEnvironment = ({ texture, width, length, showGrid }) => (
   </group>
 );
 
-const PIPCameraController = ({ position, pitch, yaw, fov, aspectRatio }) => {
-  const { camera } = useThree();
-  useEffect(() => {
-    camera.fov = fov;
-    camera.aspect = aspectRatio;
-    camera.position.set(position[0], position[1], position[2]);
-    camera.rotation.order = 'YXZ';
-    camera.rotation.set(-pitch * (Math.PI / 180), -yaw * (Math.PI / 180), 0);
-    camera.updateProjectionMatrix();
-  }, [position, pitch, yaw, fov, aspectRatio, camera]);
-  return null;
-};
-
 export default function App() {
-  const [tableWidth, setTableWidth] = useState(() => getUrlParam('tw', 8.1));
-  const [tableLength, setTableLength] = useState(() => getUrlParam('tl', 4.96));
-  const [posX, setPosX] = useState(() => getUrlParam('x', 4.05)); 
-  const [posY, setPosY] = useState(() => getUrlParam('y', 2.0));  
-  const [posZ, setPosZ] = useState(() => getUrlParam('z', 2.48)); 
-  const [pitch, setPitch] = useState(() => getUrlParam('p', 60)); 
-  const [yaw, setYaw] = useState(() => getUrlParam('yw', 0));      
-  const [fov, setFov] = useState(() => getUrlParam('f', 65)); 
+  const [tableWidth, setTableWidth] = useState(() => getUrlParam('tw', 8.1, 1, 20));
+  const [tableLength, setTableLength] = useState(() => getUrlParam('tl', 4.96, 1, 20));
+  const [posX, setPosX] = useState(() => getUrlParam('x', 4.05, -2, 22));
+  const [posY, setPosY] = useState(() => getUrlParam('y', 2.0, 0.1, 6));
+  const [posZ, setPosZ] = useState(() => getUrlParam('z', 2.48, -2, 22));
+  const [pitch, setPitch] = useState(() => getUrlParam('p', 60, 0, 90));
+  const [yaw, setYaw] = useState(() => getUrlParam('yw', 0, -180, 180));
+  const [fov, setFov] = useState(() => getUrlParam('f', 65, 45, 120));
   
   // --- 新增：画幅模式与自定义宽高 ---
   const [aspectMode, setAspectMode] = useState(() => getUrlParamString('am', '4/3'));
-  const [customW, setCustomW] = useState(() => getUrlParam('cw', 1920));
-  const [customH, setCustomH] = useState(() => getUrlParam('ch', 1080));
+  const [customW, setCustomW] = useState(() => getUrlParam('cw', 1920, 1, 16384));
+  const [customH, setCustomH] = useState(() => getUrlParam('ch', 1080, 1, 16384));
   
   const [showGrid, setShowGrid] = useState(true);
   const [showPIP, setShowPIP] = useState(true);
-  const [telemetry, setTelemetry] = useState({ area: 0, coverage: 0, centerDistance: 0 });
+  const [telemetry, setTelemetry] = useState({ area: 0, coverage: 0, centerDistance: 0, hasFootprint: true });
   const [sandTexture, setSandTexture] = useState(null);
-  const [imgStatus, setImgStatus] = useState('初始化...');
-  
+  const [imgStatus, setImgStatus] = useState('正在下载贴图...');
+  const textureRef = useRef(null);
   const fileInputRef = useRef(null); // 用于触发本地文件选择
 
   // 动态解算最终生效的宽高比
   const actualAspect = useMemo(() => {
-    if (aspectMode === 'custom') return customW / customH;
+    if (aspectMode === 'custom') return THREE.MathUtils.clamp(customW / customH, 0.1, 10);
     if (aspectMode === '16/9') return 16 / 9;
     return 4 / 3;
   }, [aspectMode, customW, customH]);
@@ -181,15 +197,31 @@ export default function App() {
 
   // 初始化加载默认服务器图片
   useEffect(() => {
-    setImgStatus('正在下载贴图...');
+    let cancelled = false;
     const loader = new THREE.TextureLoader();
     const imgPath = import.meta.env.BASE_URL + 'sandtable.jpg';
     loader.load(
       imgPath, 
-      (tex) => { tex.colorSpace = THREE.SRGBColorSpace; setSandTexture(tex); setImgStatus('已加载完成'); }, 
+      (tex) => {
+        if (cancelled) {
+          tex.dispose();
+          return;
+        }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        textureRef.current = tex;
+        setSandTexture(tex);
+        setImgStatus('已加载完成');
+      },
       undefined, 
-      () => setImgStatus('未找到图片(使用纯白底)')
+      () => {
+        if (!cancelled) setImgStatus('未找到图片(使用纯白底)');
+      },
     );
+    return () => {
+      cancelled = true;
+      textureRef.current?.dispose();
+      textureRef.current = null;
+    };
   }, []);
 
   // --- 新增：纯前端本地图片上传解析 ---
@@ -202,18 +234,31 @@ export default function App() {
     const blobUrl = URL.createObjectURL(file);
     
     const loader = new THREE.TextureLoader();
-    loader.load(blobUrl, (tex) => {
-      tex.colorSpace = THREE.SRGBColorSpace;
-      setSandTexture(tex);
-      setImgStatus('已应用本地图片');
-    });
+    loader.load(
+      blobUrl,
+      (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        textureRef.current?.dispose();
+        textureRef.current = tex;
+        setSandTexture(tex);
+        setImgStatus('已应用本地图片');
+        URL.revokeObjectURL(blobUrl);
+        e.target.value = '';
+      },
+      undefined,
+      () => {
+        URL.revokeObjectURL(blobUrl);
+        setImgStatus('图片读取失败');
+        e.target.value = '';
+      },
+    );
   };
 
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <div className="app-shell" style={{ display: 'flex', width: '100vw', height: '100dvh', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       
       {/* 左侧控制面板 */}
-      <div style={{ width: '340px', backgroundColor: '#f5f5f7', borderRight: '1px solid #d2d2d7', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
+      <div className="control-panel" style={{ width: '340px', backgroundColor: '#f5f5f7', borderRight: '1px solid #d2d2d7', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
         <div>
           <h2 style={{ margin: '0 0 4px 0', fontSize: '20px', fontWeight: '600', color: '#1d1d1f' }}>AR 视场仿真引擎</h2>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#86868b' }}>
@@ -301,8 +346,12 @@ export default function App() {
       </div>
 
       {/* 右侧主 3D 视窗 */}
-      <div style={{ flex: 1, position: 'relative', backgroundColor: '#e5e5ea' }}>
-        <Canvas camera={{ position: [tableWidth/2, Math.max(tableWidth, tableLength) * 0.8, tableLength + 4], fov: 50 }}>
+      <div className="main-view" style={{ flex: 1, position: 'relative', backgroundColor: '#e5e5ea' }}>
+        <Canvas
+          camera={{ position: [tableWidth/2, Math.max(tableWidth, tableLength) * 0.8, tableLength + 4], fov: 50 }}
+          dpr={[1, 2]}
+          gl={{ antialias: true, powerPreference: 'high-performance' }}
+        >
           <ambientLight intensity={0.5} />
           <directionalLight position={[10, 10, 5]} intensity={1} />
           <OrbitControls target={[tableWidth/2, 0, tableLength/2]} />
@@ -323,21 +372,36 @@ export default function App() {
           </group>
         </Canvas>
 
+        {!telemetry.hasFootprint && (
+          <div className="projection-warning" role="status">
+            视场上沿已越过地平线，地面投影没有有限边界。请调大俯仰角或缩小 FOV。
+          </div>
+        )}
+
         {/* 右上角 PIP 动态画中画 */}
         {showPIP && (
-          <div style={{ 
+          <div className="pip-view" style={{
             position: 'absolute', top: '24px', right: '24px', 
-            width: '320px', 
-            height: `${320 / actualAspect}px`, // 高度根据动态解算的画幅比例实时计算
-            backgroundColor: '#000', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)', border: '2px solid rgba(255,255,255,0.2)', pointerEvents: 'none', transition: 'height 0.3s ease-out'
+            width: 'min(320px, calc(100% - 48px))',
+            aspectRatio: actualAspect,
+            backgroundColor: '#000', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.3)', border: '2px solid rgba(255,255,255,0.2)', pointerEvents: 'none', transition: 'aspect-ratio 0.3s ease-out'
           }}>
             <div style={{ position: 'absolute', top: 8, left: 12, zIndex: 10, color: '#fff', fontSize: '12px', fontWeight: 'bold', background: 'rgba(0,0,0,0.5)', padding: '2px 8px', borderRadius: '4px' }}>
               ● 实时取景器
             </div>
-            <Canvas>
+            <Canvas camera={{ near: 0.05, far: 500 }} dpr={[1, 1.5]} frameloop="demand">
+              <color attach="background" args={['#111827']} />
               <ambientLight intensity={0.5} />
               <directionalLight position={[10, 10, 5]} intensity={1} />
-              <PIPCameraController position={[posX, posY, posZ]} pitch={pitch} yaw={yaw} fov={fov} aspectRatio={actualAspect} />
+              <PerspectiveCamera
+                makeDefault
+                position={[posX, posY, posZ]}
+                rotation={[-pitch * (Math.PI / 180), -yaw * (Math.PI / 180), 0]}
+                rotation-order="YXZ"
+                fov={fov}
+                near={0.05}
+                far={500}
+              />
               <SandTableEnvironment texture={sandTexture} width={tableWidth} length={tableLength} showGrid={false} />
             </Canvas>
           </div>
@@ -353,15 +417,15 @@ const btnStyle = (active) => ({
 });
 
 function ControlSlider({ label, min, max, step, value, onChange }) {
-  const [inputValue, setInputValue] = useState(value);
-  useEffect(() => { setInputValue(value.toFixed(2)); }, [value]);
+  const [draftValue, setDraftValue] = useState(null);
+  const inputValue = draftValue ?? value.toFixed(2);
 
   const commitValue = () => {
     let parsed = parseFloat(inputValue);
     if (isNaN(parsed)) parsed = value;
     if (parsed < min) parsed = min;
     if (parsed > max) parsed = max;
-    setInputValue(parsed.toFixed(2));
+    setDraftValue(null);
     onChange(parsed);
   };
 
@@ -371,11 +435,11 @@ function ControlSlider({ label, min, max, step, value, onChange }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <input 
           type="range" min={min} max={max} step={step} value={value} 
-          onChange={(e) => onChange(parseFloat(e.target.value))}
+          onChange={(e) => { setDraftValue(null); onChange(parseFloat(e.target.value)); }}
           style={{ flex: 1, accentColor: '#007AFF', cursor: 'pointer' }}
         />
         <input 
-          type="number" value={inputValue} onChange={(e) => setInputValue(e.target.value)}
+          type="number" value={inputValue} onChange={(e) => setDraftValue(e.target.value)}
           onBlur={commitValue} onKeyDown={(e) => { if (e.key === 'Enter') commitValue(); }}
           style={{ width: '64px', padding: '4px', fontSize: '12px', fontFamily: 'monospace', border: '1px solid #d2d2d7', borderRadius: '6px', textAlign: 'center' }}
         />

@@ -9,3 +9,9 @@ body, html, #root {
   height: 100%;
   overflow: hidden;
 }
+
+button,
+input,
+select {
+  font: inherit;
+}
